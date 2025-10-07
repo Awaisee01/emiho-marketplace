@@ -101,6 +101,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
+// ------------------- Stripe & Supabase Setup -------------------
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
   apiVersion: '2024-06-20' as any,
 });
@@ -111,32 +112,33 @@ const supabase = createClient(
 );
 
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
-
 export const runtime = 'edge';
 
+// ------------------- Webhook Handler -------------------
 export async function POST(request: NextRequest) {
   try {
-    // ✅ Read raw body as ArrayBuffer
+    // 1️⃣ Read raw body as ArrayBuffer
     const buf = Buffer.from(await request.arrayBuffer());
-    const signature = request.headers.get('stripe-signature');
 
+    // 2️⃣ Get Stripe signature header
+    const signature = request.headers.get('stripe-signature');
     if (!signature) {
-      console.error('❌ No Stripe signature');
+      console.error('❌ No Stripe signature header found');
       return NextResponse.json({ error: 'No signature provided' }, { status: 400 });
     }
 
     let event: Stripe.Event;
 
     try {
-      // ✅ Use raw buffer for verification
-      event = stripe.webhooks.constructEvent(buf, signature, webhookSecret);
-      console.log('✅ Verified webhook event:', event.type);
+      // 3️⃣ Verify the webhook signature (Edge-compatible)
+      event = await stripe.webhooks.constructEventAsync(buf, signature, webhookSecret);
+      console.log('✅ Stripe webhook verified:', event.type);
     } catch (err: any) {
       console.error('❌ Stripe signature verification failed:', err.message);
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    // ✅ Handle checkout.session.completed
+    // 4️⃣ Handle specific events
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object as Stripe.Checkout.Session;
 
@@ -144,29 +146,41 @@ export async function POST(request: NextRequest) {
       const sellerId = session.metadata?.sellerId;
       const buyerEmail = session.metadata?.buyerEmail;
 
-      if (!productId || !sellerId || !buyerEmail) return NextResponse.json({ received: true });
+      if (!productId || !sellerId || !buyerEmail) {
+        console.warn('⚠️ Missing metadata in session:', session.metadata);
+        return NextResponse.json({ received: true });
+      }
 
-      const { data: product } = await supabase
+      // 5️⃣ Fetch product with seller profile
+      const { data: product, error: productError } = await supabase
         .from('products')
         .select('*, profiles!inner(id, email, full_name, stripe_account_id)')
         .eq('id', productId)
         .single();
 
-      if (!product) return NextResponse.json({ received: true });
+      if (productError || !product) {
+        console.error('❌ Product not found:', productError);
+        return NextResponse.json({ received: true });
+      }
 
       const seller = product.profiles as any;
       const totalAmount = (session.amount_total || 0) / 100;
       const platformFee = totalAmount * 0.1;
       const sellerAmount = totalAmount * 0.9;
 
-      const { data: buyerProfile } = await supabase
+      // 6️⃣ Find buyer profile
+      const { data: buyerProfile, error: buyerError } = await supabase
         .from('profiles')
         .select('id')
         .eq('email', buyerEmail)
         .single();
 
-      if (!buyerProfile) return NextResponse.json({ received: true });
+      if (buyerError || !buyerProfile) {
+        console.error('❌ Buyer profile not found:', buyerError);
+        return NextResponse.json({ received: true });
+      }
 
+      // 7️⃣ Insert transaction
       const { error: transactionError } = await supabase.from('transactions').insert({
         product_id: productId,
         buyer_id: buyerProfile.id,
@@ -183,9 +197,10 @@ export async function POST(request: NextRequest) {
       else console.log('✅ Transaction inserted successfully');
     }
 
+    // 8️⃣ Return 200 to Stripe
     return NextResponse.json({ received: true });
   } catch (error: any) {
     console.error('💥 Webhook handler error:', error);
-    return NextResponse.json({ error: 'Webhook failed' }, { status: 500 });
+    return NextResponse.json({ error: 'Webhook failed', message: error.message }, { status: 500 });
   }
 }
