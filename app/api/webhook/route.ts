@@ -97,11 +97,12 @@
 
 
 
+// app/api/webhook/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
-// Disable body parsing so Stripe can verify signature
+// Disable Next.js automatic body parsing for Stripe
 export const config = { api: { bodyParser: false } };
 
 // Initialize Stripe
@@ -117,19 +118,21 @@ const supabase = createClient(
 
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
 
-// Convert ReadableStream to Buffer
-async function buffer(stream: ReadableStream<Uint8Array>) {
+// Utility to convert ReadableStream to Buffer
+async function buffer(stream: ReadableStream<Uint8Array> | null) {
+  if (!stream) return Buffer.from([]); // safe for null body
   const chunks: Uint8Array[] = [];
   const reader = stream.getReader();
-  let done: boolean | undefined = false;
+  let done = false;
   while (!done) {
     const result = await reader.read();
-    done = result.done;
+    done = result.done ?? false;
     if (result.value) chunks.push(result.value);
   }
   return Buffer.concat(chunks);
 }
 
+// POST handler for Stripe webhook
 export async function POST(req: NextRequest) {
   try {
     const buf = await buffer(req.body);
@@ -149,38 +152,49 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    // Handle checkout session completed
+    // Handle successful checkout session
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object as Stripe.Checkout.Session;
-
       const productId = session.metadata?.productId;
       const sellerId = session.metadata?.sellerId;
       const buyerEmail = session.metadata?.buyerEmail;
 
-      if (!productId || !sellerId || !buyerEmail) return NextResponse.json({ received: true });
+      if (!productId || !sellerId || !buyerEmail) {
+        console.warn('⚠️ Missing metadata, skipping transaction');
+        return NextResponse.json({ received: true });
+      }
 
-      const { data: product } = await supabase
+      // Fetch product and seller info
+      const { data: product, error: productError } = await supabase
         .from('products')
         .select('*, profiles!inner(id, email, full_name, stripe_account_id)')
         .eq('id', productId)
         .single();
 
-      if (!product) return NextResponse.json({ received: true });
+      if (productError || !product) {
+        console.error('❌ Product fetch error:', productError);
+        return NextResponse.json({ received: true });
+      }
 
       const seller = product.profiles as any;
       const totalAmount = (session.amount_total || 0) / 100;
       const platformFee = totalAmount * 0.1;
       const sellerAmount = totalAmount - platformFee;
 
-      const { data: buyerProfile } = await supabase
+      // Fetch buyer profile
+      const { data: buyerProfile, error: buyerError } = await supabase
         .from('profiles')
         .select('id')
         .eq('email', buyerEmail)
         .single();
 
-      if (!buyerProfile) return NextResponse.json({ received: true });
+      if (buyerError || !buyerProfile) {
+        console.error('❌ Buyer not found:', buyerError);
+        return NextResponse.json({ received: true });
+      }
 
-      const { error: transactionError } = await supabase.from('transactions').insert({
+      // Insert transaction
+      const { error: txError } = await supabase.from('transactions').insert({
         product_id: productId,
         buyer_id: buyerProfile.id,
         seller_id: sellerId,
@@ -192,7 +206,7 @@ export async function POST(req: NextRequest) {
         buyer_email: buyerEmail,
       });
 
-      if (transactionError) console.error('❌ Transaction insert error:', transactionError);
+      if (txError) console.error('❌ Transaction insert error:', txError);
       else console.log('✅ Transaction saved successfully');
     }
 
