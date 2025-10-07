@@ -97,13 +97,15 @@
 
 
 
+
+
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
 // ------------------- Stripe & Supabase Setup -------------------
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2024-06-20' as any,
+  apiVersion: '2025-07-30', // Latest API version
 });
 
 const supabase = createClient(
@@ -117,8 +119,8 @@ export const runtime = 'edge';
 // ------------------- Webhook Handler -------------------
 export async function POST(request: NextRequest) {
   try {
-    // 1️⃣ Read raw body as ArrayBuffer
-    const buf = Buffer.from(await request.arrayBuffer());
+    // 1️⃣ Read raw request body as Uint8Array (Edge-compatible)
+    const buf = new Uint8Array(await request.arrayBuffer());
 
     // 2️⃣ Get Stripe signature header
     const signature = request.headers.get('stripe-signature');
@@ -128,9 +130,8 @@ export async function POST(request: NextRequest) {
     }
 
     let event: Stripe.Event;
-
     try {
-      // 3️⃣ Verify the webhook signature (Edge-compatible)
+      // 3️⃣ Verify the webhook signature
       event = await stripe.webhooks.constructEventAsync(buf, signature, webhookSecret);
       console.log('✅ Stripe webhook verified:', event.type);
     } catch (err: any) {
@@ -138,63 +139,79 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    // 4️⃣ Handle specific events
-    if (event.type === 'checkout.session.completed') {
-      const session = event.data.object as Stripe.Checkout.Session;
+    // 4️⃣ Handle events
+    switch (event.type) {
+      case 'checkout.session.completed': {
+        const session = event.data.object as Stripe.Checkout.Session;
 
-      const productId = session.metadata?.productId;
-      const sellerId = session.metadata?.sellerId;
-      const buyerEmail = session.metadata?.buyerEmail;
+        const productId = session.metadata?.productId;
+        const sellerId = session.metadata?.sellerId;
+        const buyerEmail = session.metadata?.buyerEmail;
 
-      if (!productId || !sellerId || !buyerEmail) {
-        console.warn('⚠️ Missing metadata in session:', session.metadata);
-        return NextResponse.json({ received: true });
+        if (!productId || !sellerId || !buyerEmail) {
+          console.warn('⚠️ Missing metadata in session:', session.metadata);
+          return NextResponse.json({ received: true });
+        }
+
+        // 5️⃣ Fetch product with seller profile
+        const { data: product, error: productError } = await supabase
+          .from('products')
+          .select('*, profiles!inner(id, email, full_name, stripe_account_id)')
+          .eq('id', productId)
+          .single();
+
+        if (productError || !product) {
+          console.error('❌ Product not found:', productError);
+          return NextResponse.json({ received: true });
+        }
+
+        const seller = product.profiles as any;
+        const totalAmount = (session.amount_total || 0) / 100;
+        const platformFee = totalAmount * 0.1;
+        const sellerAmount = totalAmount * 0.9;
+
+        // 6️⃣ Find buyer profile
+        const { data: buyerProfile, error: buyerError } = await supabase
+          .from('profiles')
+          .select('id')
+          .eq('email', buyerEmail)
+          .single();
+
+        if (buyerError || !buyerProfile) {
+          console.error('❌ Buyer profile not found:', buyerError);
+          return NextResponse.json({ received: true });
+        }
+
+        // 7️⃣ Insert transaction
+        const { error: transactionError } = await supabase.from('transactions').insert({
+          product_id: productId,
+          buyer_id: buyerProfile.id,
+          seller_id: sellerId,
+          stripe_payment_intent_id: session.payment_intent as string,
+          total_amount: totalAmount,
+          platform_fee: platformFee,
+          seller_amount: sellerAmount,
+          status: 'completed',
+          buyer_email: buyerEmail,
+        });
+
+        if (transactionError) console.error('❌ Transaction insert failed:', transactionError);
+        else console.log('✅ Transaction inserted successfully');
+
+        break;
       }
 
-      // 5️⃣ Fetch product with seller profile
-      const { data: product, error: productError } = await supabase
-        .from('products')
-        .select('*, profiles!inner(id, email, full_name, stripe_account_id)')
-        .eq('id', productId)
-        .single();
+      // Optional: handle other events here
+      case 'payment_intent.succeeded':
+        console.log('💰 Payment succeeded:', event.data.object);
+        break;
 
-      if (productError || !product) {
-        console.error('❌ Product not found:', productError);
-        return NextResponse.json({ received: true });
-      }
+      case 'charge.succeeded':
+        console.log('💳 Charge succeeded:', event.data.object);
+        break;
 
-      const seller = product.profiles as any;
-      const totalAmount = (session.amount_total || 0) / 100;
-      const platformFee = totalAmount * 0.1;
-      const sellerAmount = totalAmount * 0.9;
-
-      // 6️⃣ Find buyer profile
-      const { data: buyerProfile, error: buyerError } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('email', buyerEmail)
-        .single();
-
-      if (buyerError || !buyerProfile) {
-        console.error('❌ Buyer profile not found:', buyerError);
-        return NextResponse.json({ received: true });
-      }
-
-      // 7️⃣ Insert transaction
-      const { error: transactionError } = await supabase.from('transactions').insert({
-        product_id: productId,
-        buyer_id: buyerProfile.id,
-        seller_id: sellerId,
-        stripe_payment_intent_id: session.payment_intent as string,
-        total_amount: totalAmount,
-        platform_fee: platformFee,
-        seller_amount: sellerAmount,
-        status: 'completed',
-        buyer_email: buyerEmail,
-      });
-
-      if (transactionError) console.error('❌ Transaction insert failed:', transactionError);
-      else console.log('✅ Transaction inserted successfully');
+      default:
+        console.log(`ℹ️ Unhandled event type: ${event.type}`);
     }
 
     // 8️⃣ Return 200 to Stripe
