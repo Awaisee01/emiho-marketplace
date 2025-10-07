@@ -97,6 +97,12 @@
 
 
 
+
+
+
+
+
+
 import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
@@ -134,8 +140,8 @@ export async function POST(request: Request) {
     let event: Stripe.Event;
     
     try {
-      // ✅ Construct event with text body
-      event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+      // ✅ Use async method for Edge runtime
+      event = await stripe.webhooks.constructEventAsync(body, signature, webhookSecret);
       console.log('✅ Webhook signature verified:', event.type);
     } catch (err: any) {
       console.error('❌ Webhook signature verification failed:', err.message);
