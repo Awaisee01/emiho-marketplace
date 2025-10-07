@@ -105,7 +105,7 @@ import { createClient } from '@supabase/supabase-js';
 
 // ------------------- Stripe & Supabase Setup -------------------
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2025-07-30', // Latest API version
+  apiVersion: '2025-07-30' as any, // Latest Stripe API version
 });
 
 const supabase = createClient(
@@ -119,8 +119,8 @@ export const runtime = 'edge';
 // ------------------- Webhook Handler -------------------
 export async function POST(request: NextRequest) {
   try {
-    // 1️⃣ Read raw request body as Uint8Array (Edge-compatible)
-    const buf = new Uint8Array(await request.arrayBuffer());
+    // 1️⃣ Read raw body as Uint8Array (Edge-compatible)
+    const rawBody = new Uint8Array(await request.arrayBuffer()) as any;
 
     // 2️⃣ Get Stripe signature header
     const signature = request.headers.get('stripe-signature');
@@ -129,17 +129,17 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'No signature provided' }, { status: 400 });
     }
 
+    // 3️⃣ Verify the webhook signature
     let event: Stripe.Event;
     try {
-      // 3️⃣ Verify the webhook signature
-      event = await stripe.webhooks.constructEventAsync(buf, signature, webhookSecret);
+      event = await stripe.webhooks.constructEventAsync(rawBody, signature, webhookSecret);
       console.log('✅ Stripe webhook verified:', event.type);
     } catch (err: any) {
       console.error('❌ Stripe signature verification failed:', err.message);
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    // 4️⃣ Handle events
+    // 4️⃣ Handle specific events
     switch (event.type) {
       case 'checkout.session.completed': {
         const session = event.data.object as Stripe.Checkout.Session;
@@ -201,7 +201,6 @@ export async function POST(request: NextRequest) {
         break;
       }
 
-      // Optional: handle other events here
       case 'payment_intent.succeeded':
         console.log('💰 Payment succeeded:', event.data.object);
         break;
