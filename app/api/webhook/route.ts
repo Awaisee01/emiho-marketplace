@@ -96,12 +96,19 @@
 // }
 
 
+
+
+
+
+// app/api/webhook/route.ts
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
+export const runtime = 'nodejs'; // Use Node runtime, not Edge
+
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2025-07-30' as any,
+  apiVersion: '2025-07-30',
 });
 
 const supabase = createClient(
@@ -110,41 +117,28 @@ const supabase = createClient(
 );
 
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
-export const runtime = 'edge';
 
-export async function POST(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    // Get raw body for Stripe verification
-    const rawBody = new Uint8Array(await request.arrayBuffer()) as any;
-    const signature = request.headers.get('stripe-signature');
-    if (!signature) return NextResponse.json({ error: 'No signature' }, { status: 400 });
+    // Parse raw body
+    const bodyBuffer = Buffer.from(await req.arrayBuffer());
+    const signature = req.headers.get('stripe-signature')!;
+    if (!signature) return NextResponse.json({ error: 'No signature provided' }, { status: 400 });
 
     let event: Stripe.Event;
     try {
-      event = await stripe.webhooks.constructEventAsync(rawBody, signature, webhookSecret);
-    } catch {
+      event = stripe.webhooks.constructEvent(bodyBuffer, signature, webhookSecret);
+      console.log('✅ Stripe webhook verified:', event.type);
+    } catch (err: any) {
+      console.error('❌ Stripe signature verification failed:', err.message);
       return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
     }
 
-    // Handle checkout session completed
     if (event.type === 'checkout.session.completed') {
       const session = event.data.object as Stripe.Checkout.Session;
       const { productId, sellerId, buyerEmail } = session.metadata || {};
 
       if (!productId || !sellerId || !buyerEmail) return NextResponse.json({ received: true });
-
-      // Fetch product with seller info
-      const { data: product } = await supabase
-        .from('products')
-        .select('*, profiles!inner(id, email, full_name, stripe_account_id)')
-        .eq('id', productId)
-        .single();
-
-      if (!product) return NextResponse.json({ received: true });
-
-      const totalAmount = (session.amount_total || 0) / 100;
-      const platformFee = totalAmount * 0.1;
-      const sellerAmount = totalAmount - platformFee;
 
       // Fetch buyer profile
       const { data: buyerProfile } = await supabase
@@ -161,16 +155,19 @@ export async function POST(request: NextRequest) {
         buyer_id: buyerProfile.id,
         seller_id: sellerId,
         stripe_payment_intent_id: session.payment_intent as string,
-        total_amount: totalAmount,
-        platform_fee: platformFee,
-        seller_amount: sellerAmount,
+        total_amount: (session.amount_total || 0) / 100,
+        platform_fee: ((session.amount_total || 0) / 100) * 0.1,
+        seller_amount: ((session.amount_total || 0) / 100) * 0.9,
         status: 'completed',
         buyer_email: buyerEmail,
       });
+
+      console.log('✅ Transaction inserted successfully');
     }
 
     return NextResponse.json({ received: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: 'Webhook failed', message: err.message }, { status: 500 });
+  } catch (error: any) {
+    console.error('💥 Webhook handler error:', error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
   }
 }
