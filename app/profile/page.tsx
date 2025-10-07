@@ -1,35 +1,42 @@
 "use client";
 
-import { useState, useEffect } from 'react';
-import { useAuth } from '@/lib/auth-context';
-import { supabase } from '@/lib/supabase';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { toast } from 'sonner';
-import { useRouter } from 'next/navigation';
-import { Navigation } from '@/components/navigation';
-import { Loader as Loader2, CircleAlert as AlertCircle } from 'lucide-react';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { useState, useEffect } from "react";
+import { useAuth } from "@/lib/auth-context";
+import { supabase } from "@/lib/supabase";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { toast } from "sonner";
+import { useRouter } from "next/navigation";
+import { Navigation } from "@/components/navigation";
+import { Loader as Loader2, CircleAlert as AlertCircle } from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import Link from "next/link";
 
 export default function ProfilePage() {
   const { user, profile, loading: authLoading, refreshProfile } = useAuth();
-  const [fullName, setFullName] = useState('');
-  const [stripeAccountId, setStripeAccountId] = useState('');
+  const [fullName, setFullName] = useState("");
+  const [stripeAccountId, setStripeAccountId] = useState("");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     if (!authLoading && !user) {
-      router.push('/auth/login');
+      router.push("/auth/login");
     }
   }, [user, authLoading, router]);
 
   useEffect(() => {
     if (profile) {
-      setFullName(profile.full_name || '');
-      setStripeAccountId(profile.stripe_account_id || '');
+      setFullName(profile.full_name || "");
+      setStripeAccountId(profile.stripe_account_id || "");
     }
   }, [profile]);
 
@@ -41,20 +48,20 @@ export default function ProfilePage() {
 
     try {
       const { error } = await supabase
-        .from('profiles')
+        .from("profiles")
         .update({
           full_name: fullName,
           stripe_account_id: stripeAccountId || null,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', user.id);
+        .eq("id", user.id);
 
       if (error) throw error;
 
       await refreshProfile();
-      toast.success('Profile updated successfully!');
+      toast.success("Profile updated successfully!");
     } catch (error: any) {
-      toast.error(error.message || 'Failed to update profile');
+      toast.error(error.message || "Failed to update profile");
     } finally {
       setLoading(false);
     }
@@ -87,7 +94,9 @@ export default function ProfilePage() {
                 <Alert className="mb-6 border-yellow-200 bg-yellow-50">
                   <AlertCircle className="h-4 w-4 text-yellow-600" />
                   <AlertDescription className="text-yellow-800">
-                    Connect your Stripe account to start selling products. Without a Stripe account ID, you wont be able to create listings.
+                    Connect your Stripe account to start selling products.
+                    Without a Stripe account ID, you wont be able to create
+                    listings.
                   </AlertDescription>
                 </Alert>
               )}
@@ -98,11 +107,13 @@ export default function ProfilePage() {
                   <Input
                     id="email"
                     type="email"
-                    value={profile?.email || ''}
+                    value={profile?.email || ""}
                     disabled
                     className="bg-slate-50"
                   />
-                  <p className="text-sm text-slate-500">Email cannot be changed</p>
+                  <p className="text-sm text-slate-500">
+                    Email cannot be changed
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -120,7 +131,9 @@ export default function ProfilePage() {
                 <div className="space-y-2">
                   <Label htmlFor="stripeAccountId">
                     Stripe Account ID
-                    <span className="text-slate-500 font-normal ml-2">(Optional for buyers, Required for sellers)</span>
+                    <span className="text-slate-500 font-normal ml-2">
+                      (Optional for buyers, Required for sellers)
+                    </span>
                   </Label>
                   <Input
                     id="stripeAccountId"
@@ -141,6 +154,16 @@ export default function ProfilePage() {
                   </p>
                 </div>
 
+                <div className="text-center">
+                  <Link
+                    href="/onboarding/success"
+                    className=" w-full text-white bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 rounded-lg p-2 text-sm"
+                    target="blank"
+                  >
+                    Go to Stripe Account
+                  </Link>
+                </div>
+
                 <Button
                   type="submit"
                   className="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700"
@@ -152,7 +175,7 @@ export default function ProfilePage() {
                       Saving...
                     </>
                   ) : (
-                    'Save Changes'
+                    "Save Changes"
                   )}
                 </Button>
               </form>
