@@ -101,40 +101,47 @@ import { NextResponse } from 'next/server';
 import Stripe from 'stripe';
 import { createClient } from '@supabase/supabase-js';
 
-export const runtime = 'edge'; // Ensure Edge runtime
+export const runtime = 'edge';
 
-// ✅ Initialize Stripe
 const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || '', {
   apiVersion: '2024-06-20' as any,
 });
 
-// ✅ Initialize Supabase
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!
 );
 
-// ✅ Stripe webhook secret (production / local)
 const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
 
 export async function POST(request: Request) {
   try {
-    // ✅ Get raw body as ArrayBuffer (required for signature verification)
-    const buf = await request.arrayBuffer();
-    const rawBody = Buffer.from(buf);
-
+    // ✅ Get raw body as text (better for Edge runtime)
+    const body = await request.text();
+    
     const signature = request.headers.get('stripe-signature');
+    
     if (!signature) {
+      console.error('❌ No Stripe signature found in headers');
       return NextResponse.json({ error: 'No signature provided' }, { status: 400 });
     }
 
+    if (!webhookSecret) {
+      console.error('❌ STRIPE_WEBHOOK_SECRET not configured');
+      return NextResponse.json({ error: 'Webhook secret not configured' }, { status: 500 });
+    }
+
     let event: Stripe.Event;
+    
     try {
-      // ✅ Async verification for Edge runtime
-      event = await stripe.webhooks.constructEventAsync(rawBody, signature, webhookSecret);
+      // ✅ Construct event with text body
+      event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+      console.log('✅ Webhook signature verified:', event.type);
     } catch (err: any) {
-      console.error('❌ Invalid Stripe signature:', err.message);
-      return NextResponse.json({ error: 'Invalid signature' }, { status: 400 });
+      console.error('❌ Webhook signature verification failed:', err.message);
+      return NextResponse.json({ 
+        error: `Webhook signature verification failed: ${err.message}` 
+      }, { status: 400 });
     }
 
     // ✅ Handle checkout session completed
@@ -145,16 +152,24 @@ export async function POST(request: Request) {
       const sellerId = session.metadata?.sellerId;
       const buyerEmail = session.metadata?.buyerEmail;
 
-      if (!productId || !sellerId || !buyerEmail) return NextResponse.json({ received: true });
+      console.log('📦 Processing checkout:', { productId, sellerId, buyerEmail });
+
+      if (!productId || !sellerId || !buyerEmail) {
+        console.warn('⚠️ Missing metadata in session');
+        return NextResponse.json({ received: true });
+      }
 
       // Fetch product with seller profile
-      const { data: product } = await supabase
+      const { data: product, error: productError } = await supabase
         .from('products')
         .select('*, profiles!inner(id, email, full_name, stripe_account_id)')
         .eq('id', productId)
         .single();
 
-      if (!product) return NextResponse.json({ received: true });
+      if (productError || !product) {
+        console.error('❌ Product not found:', productError);
+        return NextResponse.json({ received: true });
+      }
 
       const seller = product.profiles as any;
       const totalAmount = (session.amount_total || 0) / 100;
@@ -162,13 +177,16 @@ export async function POST(request: Request) {
       const sellerAmount = totalAmount * 0.9;
 
       // Find buyer profile
-      const { data: buyerProfile } = await supabase
+      const { data: buyerProfile, error: buyerError } = await supabase
         .from('profiles')
         .select('id')
         .eq('email', buyerEmail)
         .single();
 
-      if (!buyerProfile) return NextResponse.json({ received: true });
+      if (buyerError || !buyerProfile) {
+        console.error('❌ Buyer profile not found:', buyerError);
+        return NextResponse.json({ received: true });
+      }
 
       // Save transaction
       const { error: transactionError } = await supabase.from('transactions').insert({
@@ -193,6 +211,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ received: true });
   } catch (error: any) {
     console.error('💥 Webhook error:', error);
-    return NextResponse.json({ error: 'Webhook failed' }, { status: 500 });
+    return NextResponse.json({ 
+      error: 'Webhook processing failed', 
+      message: error.message 
+    }, { status: 500 });
   }
 }
